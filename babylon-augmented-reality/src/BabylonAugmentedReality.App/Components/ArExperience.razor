@@ -42,14 +42,14 @@
     private string _status = "Initializing…";
     private string? _ifcName;
     private bool _busy;
-    private bool _initialized;
+    private bool _bootStarted;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!firstRender || _initialized)
+        if (!firstRender || _bootStarted)
             return;
 
-        _initialized = true;
+        _bootStarted = true;
         try
         {
             var preview = Nav.Uri.Contains("preview=1", StringComparison.OrdinalIgnoreCase);
@@ -130,7 +130,14 @@
                 // Circuit gone during teardown.
             }
 
-            await _module.DisposeAsync();
+            try
+            {
+                await _module.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+                // Circuit already torn down.
+            }
         }
     }
 }

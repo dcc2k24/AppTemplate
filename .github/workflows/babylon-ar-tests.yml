@@ -1,0 +1,38 @@
+name: Babylon AR (build + Playwright)
+
+on:
+  push:
+    paths:
+      - "babylon-augmented-reality/**"
+      - ".github/workflows/babylon-ar-tests.yml"
+  pull_request:
+    paths:
+      - "babylon-augmented-reality/**"
+      - ".github/workflows/babylon-ar-tests.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: babylon-augmented-reality
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free default dev port
+        run: fuser -k 5275/tcp 2>/dev/null || true
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Restore and build
+        run: dotnet build BabylonAugmentedReality.sln -c Release
+
+      - name: Install Playwright Chromium
+        run: pwsh ./tests/BabylonAugmentedReality.PlaywrightTests/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+
+      - name: Run Playwright tests
+        run: bash ./scripts/run-e2e-tests.sh

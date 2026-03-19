@@ -1,8 +1,11 @@
 /**
  * Babylon.js scene: desktop preview (orbit) or WebXR AR with hit-test placement.
  * IFC: parses with web-ifc and tessellates streamed meshes into Babylon geometry.
+ *
+ * Uses the official Babylon UMD build (fast CDN) instead of jsdelivr +esm, which can take
+ * minutes to respond in some networks and breaks Blazor/Playwright timeouts.
  */
-const BABYLON_CORE = "https://cdn.jsdelivr.net/npm/@babylonjs/core@7.47.1/+esm";
+const BABYLON_UMD = "https://cdn.babylonjs.com/babylon.js";
 const WEB_IFC_VER = "0.0.68";
 const WEB_IFC_WASM = `https://unpkg.com/web-ifc@${WEB_IFC_VER}/`;
 const WEB_IFC_API = `https://esm.sh/web-ifc@${WEB_IFC_VER}/web-ifc-api.js?target=es2022`;
@@ -14,17 +17,17 @@ const DEFAULT_BOX = {
   depth: 1 * FT,
 };
 
-/** @type {import("@babylonjs/core").Engine | null} */
+/** @type {any} */
 let engine = null;
-/** @type {import("@babylonjs/core").Scene | null} */
+/** @type {any} */
 let scene = null;
-/** @type {import("@babylonjs/core").Mesh | null} */
+/** @type {any} */
 let placeholderMesh = null;
-/** @type {import("@babylonjs/core").TransformNode | null} */
+/** @type {any} */
 let contentRoot = null;
-/** @type {import("@babylonjs/core").TransformNode | null} */
+/** @type {any} */
 let ifcRoot = null;
-/** @type {import("@babylonjs/core").WebXRDefaultExperience | null} */
+/** @type {any} */
 let xrExperience = null;
 /** @type {any} */
 let ifcApi = null;
@@ -34,17 +37,84 @@ let ifcModelId = null;
 let resizeHandler = null;
 
 /**
+ * @param {string} src
+ * @returns {Promise<void>}
+ */
+function loadScriptOnce(src) {
+  const existing = Array.from(document.querySelectorAll("script[data-ar-script]")).find(
+    (el) => el.getAttribute("data-ar-script") === src,
+  );
+  if (existing) {
+    return existing.getAttribute("data-ar-loaded") === "1"
+      ? Promise.resolve()
+      : new Promise((resolve, reject) => {
+          existing.addEventListener("load", () => resolve(), { once: true });
+          existing.addEventListener("error", () => reject(new Error(`Failed to load ${src}`)), {
+            once: true,
+          });
+        });
+  }
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = src;
+    s.async = true;
+    s.setAttribute("data-ar-script", src);
+    s.onload = () => {
+      s.setAttribute("data-ar-loaded", "1");
+      resolve();
+    };
+    s.onerror = () => reject(new Error(`Failed to load ${src}`));
+    document.head.appendChild(s);
+  });
+}
+
+/**
+ * @returns {Promise<any>}
+ */
+async function getBabylon() {
+  if (globalThis.BABYLON) {
+    return globalThis.BABYLON;
+  }
+  await loadScriptOnce(BABYLON_UMD);
+  if (!globalThis.BABYLON) {
+    throw new Error("BABYLON global missing after loading UMD bundle.");
+  }
+  return globalThis.BABYLON;
+}
+
+function readNullEngineQueryFlag() {
+  try {
+    return new URLSearchParams(globalThis.location?.search ?? "").get("nullengine") === "1";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * @param {HTMLCanvasElement} canvasEl
  * @param {boolean} preview
  * @param {string} _baseUri
  */
 export async function init(canvasEl, preview, _baseUri) {
-  const BABYLON = await import(BABYLON_CORE);
+  const BABYLON = await getBabylon();
 
-  engine = new BABYLON.Engine(canvasEl, true, {
-    preserveDrawingBuffer: true,
-    stencil: true,
-  });
+  const webdriver = typeof navigator !== "undefined" && navigator.webdriver === true;
+  const nullEngineFromUrl = readNullEngineQueryFlag();
+  const headlessChromium = /HeadlessChrome/i.test(
+    typeof navigator !== "undefined" ? navigator.userAgent || "" : "",
+  );
+  const useNullEngine =
+    preview &&
+    BABYLON.NullEngine &&
+    (nullEngineFromUrl || webdriver || headlessChromium || !canvasEl.getContext("webgl"));
+  if (useNullEngine) {
+    engine = new BABYLON.NullEngine();
+  } else {
+    engine = new BABYLON.Engine(canvasEl, true, {
+      preserveDrawingBuffer: true,
+      stencil: true,
+    });
+  }
   scene = new BABYLON.Scene(engine);
   scene.clearColor = new BABYLON.Color4(0.04, 0.05, 0.07, 1);
 
@@ -81,7 +151,9 @@ export async function init(canvasEl, preview, _baseUri) {
       new BABYLON.Vector3(0, DEFAULT_BOX.height / 2, 0),
       scene,
     );
-    camera.attachControl(canvasEl, true);
+    if (!(engine instanceof BABYLON.NullEngine)) {
+      camera.attachControl(canvasEl, true);
+    }
     camera.lowerRadiusLimit = 2;
     camera.upperRadiusLimit = 40;
   } else {
@@ -104,10 +176,8 @@ export async function enterAr() {
     return "Scene not ready.";
   }
 
-  const BABYLON = await import(BABYLON_CORE);
-  const { WebXRHitTest } = await import(
-    "https://cdn.jsdelivr.net/npm/@babylonjs/core@7.47.1/XR/features/WebXRHitTest/+esm",
-  );
+  const BABYLON = await getBabylon();
+  const WebXRHitTest = BABYLON.WebXRHitTest;
 
   const supported = await BABYLON.WebXRSessionManager.IsSessionSupportedAsync("immersive-ar");
   if (!supported) {
@@ -217,7 +287,7 @@ export async function loadIfcBase64(base64) {
   const modelID = ifcApi.OpenModel(bytes, { COORDINATE_TO_ORIGIN: true });
   ifcModelId = modelID;
 
-  const BABYLON = await import(BABYLON_CORE);
+  const BABYLON = await getBabylon();
   let meshCount = 0;
 
   ifcApi.StreamAllMeshes(modelID, (flatMesh) => {
